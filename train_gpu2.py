@@ -39,12 +39,12 @@
 # ###########################################################################
 
 import argparse
-from models.ae_gpu1 import AutoencoderModel
+from models.ae_gpu2 import AutoencoderModel
 from models.pca import PCAModel
 from models.ocsvm import SVMModel
-from models.vae_gpu1 import VAEModel
-from models.bigan_gpu1 import BiGANModel
-from models.seq2seq_gpu1 import Seq2SeqModel
+from models.vae_gpu2 import VAEModel
+from models.bigan_gpu2 import BiGANModel
+from models.seq2seq_gpu2 import Seq2SeqModel
 from utils import data_utils, eval_utils
 import numpy as np
 
