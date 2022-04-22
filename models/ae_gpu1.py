@@ -61,6 +61,11 @@ np.random.seed(2018)
 np.random.RandomState(2018)
 random.seed(2018)
 
+physical_gpus = tensorflow.config.list_physical_devices('GPU')
+logical_gpus = tensorflow.config.list_logical_devices('GPU')
+tensorflow.debugging.set_log_device_placement( True )
+strategy = tensorflow.distribute.MirroredStrategy(logical_gpus)
+
 
 class AutoencoderModel():
 
@@ -86,84 +91,84 @@ class AutoencoderModel():
 
     def create_model(self, n_features, hidden_layers=1, latent_dim=2, hidden_dim=[],
                      output_activation='sigmoid', learning_rate=0.001, model_path=None):
+        with tensorflow.device('/GPU:1'):
+            # set dimensions hidden layers
+            if hidden_dim == []:
+                i = 0
+                dim = n_features
+                while i < hidden_layers:
+                    hidden_dim.append(int(np.max([dim/2, 2])))
+                    dim /= 2
+                    i += 1
 
-        # set dimensions hidden layers
-        if hidden_dim == []:
-            i = 0
-            dim = n_features
+            # Optional: add regularization to minimize overfitting?
+            # kernel_regularizer = regularizers.l1_l2(l1=0.01, l2=0.01)
+            # kernel_regularizer = regularizers.l1(0.01)
+            kernel_regularizer = None
+
+            # AE = encoder + decoder
+            # encoder
+            inputs = Input(shape=(n_features,), name='encoder_input')
+            # define hidden layers
+            enc_hidden = Dense(hidden_dim[0], activation='relu', name='encoder_hidden_0',
+                            kernel_regularizer=kernel_regularizer)(inputs)
+            i = 1
             while i < hidden_layers:
-                hidden_dim.append(int(np.max([dim/2, 2])))
-                dim /= 2
+                enc_hidden = Dense(hidden_dim[i], activation='relu', name='encoder_hidden_'+str(
+                    i), kernel_regularizer=kernel_regularizer)(enc_hidden)
                 i += 1
 
-        # Optional: add regularization to minimize overfitting?
-        # kernel_regularizer = regularizers.l1_l2(l1=0.01, l2=0.01)
-        # kernel_regularizer = regularizers.l1(0.01)
-        kernel_regularizer = None
+            z_ = Dense(latent_dim, name='z_')(enc_hidden)
 
-        # AE = encoder + decoder
-        # encoder
-        inputs = Input(shape=(n_features,), name='encoder_input')
-        # define hidden layers
-        enc_hidden = Dense(hidden_dim[0], activation='relu', name='encoder_hidden_0',
-                           kernel_regularizer=kernel_regularizer)(inputs)
-        i = 1
-        while i < hidden_layers:
-            enc_hidden = Dense(hidden_dim[i], activation='relu', name='encoder_hidden_'+str(
-                i), kernel_regularizer=kernel_regularizer)(enc_hidden)
-            i += 1
+            encoder = Model(inputs, z_, name='encoder')
+            logging.info(encoder.summary())
+            # plot_model(encoder, to_file='ae_mlp_encoder.png',
+            #            show_shapes=True)
 
-        z_ = Dense(latent_dim, name='z_')(enc_hidden)
+            # decoder
+            latent_inputs = Input(shape=(latent_dim,), name='z_')
+            # define hidden layers
+            dec_hidden = Dense(hidden_dim[-1], activation='relu', name='decoder_hidden_0',
+                            kernel_regularizer=kernel_regularizer)(latent_inputs)
 
-        encoder = Model(inputs, z_, name='encoder')
-        logging.info(encoder.summary())
-        # plot_model(encoder, to_file='ae_mlp_encoder.png',
-        #            show_shapes=True)
+            i = 2
+            while i < hidden_layers+1:
+                dec_hidden = Dense(hidden_dim[-i], activation='relu', name='decoder_hidden_'+str(
+                    i-1), kernel_regularizer=kernel_regularizer)(dec_hidden)
+                i += 1
 
-        # decoder
-        latent_inputs = Input(shape=(latent_dim,), name='z_')
-        # define hidden layers
-        dec_hidden = Dense(hidden_dim[-1], activation='relu', name='decoder_hidden_0',
-                           kernel_regularizer=kernel_regularizer)(latent_inputs)
+            outputs = Dense(n_features, activation=output_activation,
+                            name='decoder_output')(dec_hidden)
+            # instantiate decoder model
+            decoder = Model(latent_inputs, outputs, name='decoder')
+            logging.info(decoder.summary())
+            # plot_model(decoder, to_file='ae_mlp_decoder.png',
+            #            show_shapes=True)
 
-        i = 2
-        while i < hidden_layers+1:
-            dec_hidden = Dense(hidden_dim[-i], activation='relu', name='decoder_hidden_'+str(
-                i-1), kernel_regularizer=kernel_regularizer)(dec_hidden)
-            i += 1
+            # instantiate AE model
+            outputs = decoder(encoder(inputs))
+            self.model = Model(inputs, outputs, name='ae', )
 
-        outputs = Dense(n_features, activation=output_activation,
-                        name='decoder_output')(dec_hidden)
-        # instantiate decoder model
-        decoder = Model(latent_inputs, outputs, name='decoder')
-        logging.info(decoder.summary())
-        # plot_model(decoder, to_file='ae_mlp_decoder.png',
-        #            show_shapes=True)
-
-        # instantiate AE model
-        outputs = decoder(encoder(inputs))
-        self.model = Model(inputs, outputs, name='ae', )
-
-        optimizer = Adam(lr=learning_rate)
-        self.model.compile(optimizer=optimizer, loss="mse")
+            optimizer = Adam(lr=learning_rate)
+            self.model.compile(optimizer=optimizer, loss="mse")
 
     def train(self, in_train, in_val):
         # default args
 
         # training
+        with tensorflow.device('/GPU:1'):
+            X_train, X_val = in_train, in_val
+            logging.info("Training with data of shape " + str(X_train.shape))
 
-        X_train, X_val = in_train, in_val
-        logging.info("Training with data of shape " + str(X_train.shape))
+            kwargs = {}
+            kwargs['epochs'] = self.epochs
+            kwargs['batch_size'] = self.batch_size
+            kwargs['shuffle'] = True
+            kwargs['validation_data'] = (X_val, X_val)
+            kwargs['verbose'] = 1
+            kwargs['callbacks'] = [train_utils.TimeHistory()]
 
-        kwargs = {}
-        kwargs['epochs'] = self.epochs
-        kwargs['batch_size'] = self.batch_size
-        kwargs['shuffle'] = True
-        kwargs['validation_data'] = (X_val, X_val)
-        kwargs['verbose'] = 1
-        kwargs['callbacks'] = [train_utils.TimeHistory()]
-
-        history = self.model.fit(X_train, X_train, **kwargs)
+            history = self.model.fit(X_train, X_train, **kwargs)
 
     def compute_anomaly_score(self, df):
         preds = self.model.predict(df)
